@@ -1,14 +1,4 @@
 #!/usr/bin/env python3
-"""
-Permute most possible settings to crack the RNG from only a set of numbers generated with Math.random().
-
-- All samples + multiple -1000
-- Reversed
-- Split in max 32
-- Automatically find round MULTIPLE from max of samples
-"""
-
-
 from math import ceil, log10
 import os
 from pathlib import Path
@@ -62,7 +52,7 @@ permutations = [
 ]
 
 
-def try_permutations(samples, multiple):
+def find_with_permutations(samples, multiple):
     for l in range(len(permutations)+1):
         for perm in itertools.combinations(permutations, l):
             if perm_half_first in perm and perm_half_last in perm:
@@ -102,7 +92,7 @@ def try_permutations(samples, multiple):
             else:
                 print("Failed to solve")
 
-    return None, None
+    return (None, None), None
 
 
 def find_multiple(samples):
@@ -115,12 +105,12 @@ def find_multiple(samples):
 
 def explain_permutations(perm, states, multiple):
     print()
+    if perm_reverse in perm:
+        print("- The samples were reversed. This is because the cache is a Last In First Out (LIFO) structure.")
     if perm_half_first in perm:
         print("- The last half of your samples appear to be on a 64-wide cache boundary, therefore only the first half was used.")
     if perm_half_last in perm:
         print("- The first half of your samples appear to be on a 64-wide cache boundary, therefore only the last half was used.")
-    if perm_reverse in perm:
-        print("- The samples were reversed. This is because the cache is a Last In First Out (LIFO) structure.")
     if perm_offset in perm:
         offset = get_offset(multiple)
         multiple -= offset
@@ -174,7 +164,7 @@ if __name__ == "__main__":
     print("Multiple:", args.multiple)
 
     print("Starting permutations...")
-    (state0, state1), perm = try_permutations(args.samples, args.multiple)
+    (state0, state1), perm = find_with_permutations(args.samples, args.multiple)
     print()
     if state0 is None and state1 is None:
         print("Failed to solve for all permutations")

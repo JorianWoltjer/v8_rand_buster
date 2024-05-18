@@ -9,7 +9,12 @@ from z3 import *
 MAX_UNUSED_THREADS = 2
 
 
+def log(*args, **kwargs):
+    print(*args, **kwargs, file=sys.stderr)
+
 # Calculates xs128p (XorShift128Plus)
+
+
 def xs128p(state0, state1):
     s1 = state0 & 0xFFFFFFFFFFFFFFFF
     s0 = state1 & 0xFFFFFFFFFFFFFFFF
@@ -184,11 +189,10 @@ if __name__ == "__main__":
 
     if state is None:
         if not all(map(lambda x: 0 <= x < args.multiple, args.samples)):
-            print("[-] Error: All points must be in the range [0, MULTIPLE)",
-                  file=sys.stderr)
+            log("[-] Error: All points must be in the range [0, MULTIPLE)")
             exit(1)
 
-        print(f"Inputs ({len(args.samples)}):", args.samples)
+        log(f"Inputs ({len(args.samples)}):", args.samples)
         args.samples = [n + args.add for n in args.samples]
         s, (state0, state1) = create_solver(args.samples, args.multiple)
 
@@ -198,32 +202,31 @@ if __name__ == "__main__":
                 f.write("(set-logic QF_BV)\n")
                 f.write(s.to_smt2())
                 f.write("(get-model)")
-            print("Wrote constraints to z3.smt2.")
+            log("Wrote constraints to z3.smt2.")
             exit(0)
         else:
-            print("Solving states...\n")
+            log("Solving states...\n")
             if s.check() == sat:
                 # get a solved state
                 m = s.model()
                 state0 = m[state0].as_long()
                 state1 = m[state1].as_long()
             else:
-                print("""[-] Failed to find a valid solution. Some potential reasons:
+                log("""[-] Failed to find a valid solution. Some potential reasons:
 - The generator does not use Math.random()
 - The MULTIPLE value is incorrect
 - You forgot a newline at the end of the input file, causing `tac` to merge the last value with the first value
 - The input is not reversed
-- The input was bucketed (not inside a 64-sample boundary)""", file=sys.stderr)
+- The input was bucketed (not inside a 64-sample boundary)""")
                 exit(1)
     else:
         state0, state1 = state
 
     if state0 is not None and state1 is not None:
-        print(f"[+] Found states: {state0},{state1}")
-        print()
+        log(f"[+] Found states: {state0},{state1}\n")
 
     if args.gen > 0:
-        print(f"Predictions ({args.gen}):")
+        log(f"Predictions ({args.gen}):")
 
     if args.samples is not None and not args.include_samples:
         for _ in range(len(args.samples)):
@@ -232,5 +235,3 @@ if __name__ == "__main__":
     for _ in range(args.gen):
         state0, state1, output = xs128p(state0, state1)
         print(math.floor(args.multiple * to_double(output)) + args.add)
-
-# TODO all prints to stderr
