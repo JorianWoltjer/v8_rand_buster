@@ -84,7 +84,9 @@ These outputs will have already added the `-a` value, so they should match up wi
 
 An important thing to note here is how the sequential xorshift128 values line up with the random outputs. The outputs are in the form of a **cache of 64 outputs**, which are read in a LIFO (Last-In First-Out) manner meaning from 64th to 1st. When it reaches the end, another set of 64 outputs is generated in one go starting from 64 again. This results in the samples coming out backwards, and a boundary of non-continuous numbers every 64 times. See the following diagram where XS128+ shows the raw output:
 
-![image](https://github.com/JorianWoltjer/v8_rand_buster/assets/26067369/165237ac-d9fa-4acb-b050-26181d92c583)
+<p align="center">
+  <img src="https://github.com/JorianWoltjer/v8_rand_buster/assets/26067369/165237ac-d9fa-4acb-b050-26181d92c583" width="600">
+</p>
 
 If we remember the code used to generate these numbers, it started off by calling the random function 60 times, and then gave us 25 outputs. That means we did not receive the 60th-85th inputs, but instead, we received the 4th-1st and 128th to 108th inputs. We have cracked the state at index 108, and as seen above we can predict our inputs in reverse by iterating the random number generator from 108 to 128. After this, however, we get new values like index 129-192 which will only be output by the original program after passing the next cache boundary, as now it will generate the rest of 107-65 first. 
 
