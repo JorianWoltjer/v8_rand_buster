@@ -1,4 +1,6 @@
+#!/usr/bin/env python3
 import argparse
+from pathlib import Path
 import struct
 from decimal import *
 import os
@@ -46,33 +48,33 @@ def sym_floor_random(slvr, sym_state0, sym_state1, generated, multiple):
 
     """
     Symbolically compatible Math.floor expression.
- 
+
     Here's how it works:
- 
+
     64-bit floating point numbers are represented using IEEE 754 (https://en.wikipedia.org/wiki/Double-precision_floating-point_format) which describes how
     bit vectors represent decimal values. In our specific case, we're dealing with a function (Math.random) that only generates numbers in the range [0, 1).
- 
+
     This allows us to make some assumptions in how we deal with floating point numbers (like ignoring parts of the bitvector entirely).
- 
+
     The 64bit floating point is laid out as follows
     [1 bit sign][11 bit expr][52 bit "mantissa"]
- 
+
     The formula to calculate the value is as follows: (-1)^sign * (1 + Sigma_{i=1 -> 52}(M_{52 - i} * 2^-i)) * 2^(expr - 1023)
- 
+
     Therefore 0_01111111111_1100000000000000000000000000000000000000000000000000 is equal to "1.75"
- 
+
     sign => 0 => ((-1) ^ 0) => 1
     expr => 1023 => 2^(expr - 1023) => 1
     mantissa => <bitstring> => (1 + sum(M_{52 - i} * 2^-i) => 1.75
- 
+
     1 * 1 * 1.75 = 1.75 :)
- 
+
     Clearly we can ignore the sign as our numbers are entirely non-negative.
- 
+
     Additionally, we know that our values are between 0 and 1 (exclusive) and therefore the expr MUST be, at most, 1023, always.
- 
+
     What about the expr?
- 
+
     """
     lower = from_double(Decimal(generated) / Decimal(multiple))
     upper = from_double((Decimal(generated) + 1) / Decimal(multiple))
@@ -81,57 +83,26 @@ def sym_floor_random(slvr, sym_state0, sym_state1, generated, multiple):
     upper_mantissa = (upper & 0x000FFFFFFFFFFFFF)
     upper_expr = (upper >> 52) & 0x7FF
 
-    slvr.add(And(lower_mantissa <= calc, Or(upper_mantissa >= calc, upper_expr == 1024)))
+    slvr.add(And(lower_mantissa <= calc, Or(
+        upper_mantissa >= calc, upper_expr == 1024)))
     return sym_state0, sym_state1
 
 
-def solve_instance(points, multiple, unknown_leading=False):
+def create_solver(points, multiple):
     # setup symbolic state for xorshift128+
-    ostate0, ostate1 = BitVecs('ostate0 ostate1', 64)
-    sym_state0 = ostate0
-    sym_state1 = ostate1
+    state0, state1 = BitVecs('state0 state1', 64)
+    sym_state0, sym_state1 = state0, state1
     set_option("parallel.enable", True)
     set_option("parallel.threads.max", (
         max(os.cpu_count() - MAX_UNUSED_THREADS, 1)))  # will use max or max cpu thread support, whatever is smaller
-    slvr = SolverFor(
+    s = SolverFor(
         "QF_BV")  # This type of problem is much faster computed using QF_BV (also, if branching happens, we can use parallelization)
 
-    # run symbolic xorshift128+ algorithm for three iterations
-    # using the recovered numbers as constraints
-
-    if unknown_leading:
-        # we want to try to predict one value ahead so let's slide one unknown into the calculation
-        sym_state0, sym_state1 = sym_xs128p(sym_state0, sym_state1)
-
     for point in points:
-        sym_state0, sym_state1 = sym_floor_random(slvr, sym_state0, sym_state1, point, multiple)
+        sym_state0, sym_state1 = sym_floor_random(
+            s, sym_state0, sym_state1, point, multiple)
 
-    if slvr.check() == sat:
-        # get a solved state
-        m = slvr.model()
-        state0 = m[ostate0].as_long()
-        state1 = m[ostate1].as_long()
-
-        return state0, state1
-    else:
-        print("Failed to find a valid solution")
-        return None, None
-
-def solve(points, multiple, lead):
-    if lead > 0:
-        last_state0 = None
-        last_state1 = None
-
-        for i in range(0, int(lead)):
-            last_state0, last_state1 = solve_instance(points, multiple, True)
-
-            state0, state1, output = xs128p(last_state0, last_state1)
-            new_point = math.floor(multiple * to_double(output))
-            points = [new_point] + points
-
-        return last_state0, last_state1
-    else:
-        return solve_instance(points, multiple)
+    return s, (state0, state1)
 
 
 def to_double(value):
@@ -158,34 +129,39 @@ def from_double(dbl):
 def get_args():
     parser = argparse.ArgumentParser(
         description="Uses Z3 to predict future states for 'Math.floor(MULTIPLE * Math.random())' given some consecutive historical values. Pipe unbucketed points in via STDIN.")
-    parser.add_argument('--multiple',
-                        help="Specifies the multiplier used in 'Math.floor(MULTIPLE * Math.random())'. Defaults to 1.")
-    parser.add_argument('--gen',
-                        help="Instead of predicting state, take a state pair and generate output. (state0,state1,num)")
-    parser.add_argument('--lead',
-                        help="The number of elements backwards to predict")
+    parser.add_argument('samples', type=Path, nargs='?',
+                        help="The file containing the leaked, unbucketed points")
+    parser.add_argument('-m', '--multiple', required=True, type=float,
+                        help="Specifies the multiplier used in 'Math.floor(MULTIPLE * Math.random())'")
+    parser.add_argument('-o', '--output', type=Path,
+                        help="Output file to write constraints to instead of solving (useful for github.com/SRI-CSL/yices2)")
+    parser.add_argument('-s', '--state',
+                        help="Instead of predicting state, take a state pair and generate output. (state0,state1)")
+    parser.add_argument('-g', '--gen', default=5, type=int,
+                        help="Number of predictions to generate")
+    parser.add_argument('-a', '--add', type=int, default=0,
+                        help="Offset to add to all input samples and output predictions")
+    parser.add_argument('-i', '--include-samples', action='store_true',
+                        help="Include the samples in the prediction output")
 
     args = parser.parse_args()
 
-    multiple_arg = args.multiple
-    lead_arg = args.lead
+    if args.state is not None:
+        args.state = list(map(lambda x: int(x), args.state.split(",")))
 
-    multiple = 1.0 if multiple_arg is None else float(multiple_arg)
-    lead = 0 if lead_arg is None else float(lead_arg)
+    if args.samples is not None:
+        args.samples = list(map(lambda line: int(line),
+                                args.samples.read_text().splitlines()))
+    elif args.state is None:
+        args.samples = list(map(lambda line: int(line), sys.stdin.readlines()))
 
-    if args.gen:
-        state0, state1, count = list(map(lambda x: int(x), args.gen.split(",")))
+    assert args.samples is None or len(args.samples) > 0, \
+        "Failed reading samples"
 
-        return None, multiple, (state0, state1, count), None
-    else:
-        points = list(map(lambda line: int(line), sys.stdin.readlines()))
+    return args
 
-        assert len(
-            points) != 0, "Pipe the leaked, unbucketed points via STDIN.\nExample:\n\tcat FILE | python3 xs2.py --multiple 1000"
 
-        return lead, multiple, None, points
-
-def main():
+if __name__ == "__main__":
     """
     # -----------------------------------------------------------------------------------------------------------------------------------------------------------
     # Relevant v8 Code to understand this solver:
@@ -202,19 +178,59 @@ def main():
     # -----------------------------------------------------------------------------------------------------------------------------------------------------------
     """
 
-    lead, multiple, gen, points = get_args()
+    args = get_args()
 
-    if gen is not None:
-        state0, state1, count = gen
+    state = args.state
 
-        for i in range(count):
-            state0, state1, output = xs128p(state0, state1)
-            print(math.floor(multiple * to_double(output)))
+    if state is None:
+        if not all(map(lambda x: 0 <= x < args.multiple, args.samples)):
+            print("[-] Error: All points must be in the range [0, MULTIPLE)",
+                  file=sys.stderr)
+            exit(1)
+
+        print(f"Inputs ({len(args.samples)}):", args.samples)
+        args.samples = [n + args.add for n in args.samples]
+        s, (state0, state1) = create_solver(args.samples, args.multiple)
+
+        if args.output is not None:
+            with open(args.output, "w") as f:
+                # Export z3 constraints to file, for other runners
+                f.write("(set-logic QF_BV)\n")
+                f.write(s.to_smt2())
+                f.write("(get-model)")
+            print("Wrote constraints to z3.smt2.")
+            exit(0)
+        else:
+            print("Solving states...\n")
+            if s.check() == sat:
+                # get a solved state
+                m = s.model()
+                state0 = m[state0].as_long()
+                state1 = m[state1].as_long()
+            else:
+                print("""[-] Failed to find a valid solution. Some potential reasons:
+- The generator does not use Math.random()
+- The MULTIPLE value is incorrect
+- You forgot a newline at the end of the input file, causing `tac` to merge the last value with the first value
+- The input is not reversed
+- The input was bucketed (not inside a 64-sample boundary)""", file=sys.stderr)
+                exit(1)
     else:
-        state0, state1 = solve(points, multiple, lead)
+        state0, state1 = state
 
-        if state0 is not None and state1 is not None:
-            print("{},{}".format(state0, state1))
+    if state0 is not None and state1 is not None:
+        print(f"[+] Found states: {state0},{state1}")
+        print()
 
+    if args.gen > 0:
+        print(f"Predictions ({args.gen}):")
 
-main()
+    if args.samples is not None and not args.include_samples:
+        for _ in range(len(args.samples)):
+            state0, state1, _ = xs128p(state0, state1)
+
+    for _ in range(args.gen):
+        state0, state1, output = xs128p(state0, state1)
+        print(math.floor(args.multiple * to_double(output)) + args.add)
+
+# TODO all prints to stderr
