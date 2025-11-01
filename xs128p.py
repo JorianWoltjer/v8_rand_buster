@@ -5,6 +5,8 @@ import struct
 from decimal import *
 import os
 from z3 import *
+import sys
+import math
 
 MAX_UNUSED_THREADS = 2
 
@@ -27,6 +29,34 @@ def xs128p(state0, state1):
     generated = state0 & 0xFFFFFFFFFFFFFFFF
 
     return state0, state1, generated
+
+
+def inv_xs128p(state0, state1):
+    mask = 0xFFFFFFFFFFFFFFFF
+    y = state0 & mask
+    t = state1 & mask
+    u = (t ^ y ^ (y >> 26)) & mask
+
+    def unxor_rshift(val, shift):
+        res = val
+        i = shift
+        while i < 64:
+            res ^= res >> i
+            i <<= 1
+        return res & mask
+
+    def unxor_lshift(val, shift):
+        res = val
+        i = shift
+        while i < 64:
+            res ^= (res << i) & mask
+            i <<= 1
+        return res & mask
+
+    x = unxor_lshift(unxor_rshift(u, 17), 23)
+    prev_state0 = x & mask
+    prev_state1 = y & mask
+    return prev_state0, prev_state1, prev_state1
 
 
 def sym_xs128p(sym_state0, sym_state1):
@@ -167,22 +197,6 @@ def get_args():
 
 
 if __name__ == "__main__":
-    """
-    # -----------------------------------------------------------------------------------------------------------------------------------------------------------
-    # Relevant v8 Code to understand this solver:
-    # Math.Random Implementation (https://github.com/v8/v8/blob/4b9b23521e6fd42373ebbcb20ebe03bf445494f9/src/builtins/builtins-math-gen.cc#L402)
-    #   Uses a precomputed cache of values to make subsequent calls to Math.random quick
-    #   This source will refer to this as "bucketing" as it puts the random values in "buckets" that we use until they are empty.
-    #   After the bucket is empty, we make a call to RefillCache (https://github.com/v8/v8/blob/4b9b23521e6fd42373ebbcb20ebe03bf445494f9/src/math-random.cc#L36)
-    #   which populates the cache (bucket) with 64 () new random values. If the cache is not empty when Math.random is called,
-    #   we pop the next value off the rear of the array until we're at `MATH_RANDOM_INDEX_INDEX` == 0 again for a refill.
-    #   Notable hurdles in implementation:
-    #       Unlike previous and similar implementations of xs128p, Chrome only uses `state_0` for converting and storing cached randoms
-    #           > (https://github.com/v8/v8/blob/4b9b23521e6fd42373ebbcb20ebe03bf445494f9/src/math-random.cc#L64)
-    #           > vs (https://github.com/v8/v8/commit/ac66c97cfddc1e9fd89b494950ecf8a1a260bc80#diff-202872834c682708e9294600f73e4d15L115) (PRE SEPT 2018)
-    # -----------------------------------------------------------------------------------------------------------------------------------------------------------
-    """
-
     args = get_args()
 
     state = args.state
@@ -232,6 +246,13 @@ if __name__ == "__main__":
         for _ in range(len(args.samples)):
             state0, state1, _ = xs128p(state0, state1)
 
-    for _ in range(args.gen):
-        state0, state1, output = xs128p(state0, state1)
-        print(math.floor(args.multiple * to_double(output)) + args.add)
+    if args.gen >= 0:
+        for _ in range(args.gen):
+            state0, state1, output = xs128p(state0, state1)
+            print(math.floor(args.multiple * to_double(output)) + args.add)
+    else:
+        for _ in range(abs(args.gen)):
+            output = state0 & 0xFFFFFFFFFFFFFFFF
+            print(math.floor(args.multiple * to_double(output)) + args.add)
+            state0, state1, _ = inv_xs128p(state0, state1)
+    # TODO: make support for 64-value cache boundaries, somehow recover the offset or arg it
